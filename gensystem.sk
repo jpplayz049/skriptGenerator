@@ -1,0 +1,267 @@
+options:
+    core-name: &6&lMoney Core
+    gen-name: &a&lGenerator
+    start-gen-cost: 100
+    base-core-money: 10
+
+#################################################
+# JOIN & INITIALIZATION
+#################################################
+on join:
+    if {money::%uuid of player%} is not set:
+        set {money::%uuid of player%} to 0
+        set {gens_bought::%uuid of player%} to 0
+        give player beacon named "{@core-name}"
+        give player dispenser named "{@gen-name}"
+
+#################################################
+# MONEY & ADMIN COMMANDS
+#################################################
+command /money:
+    trigger:
+        send "&6Balance: &a$%{money::%uuid of player%}%" to player
+
+command /givemoney <player> <number>:
+    permission: op
+    trigger:
+        add arg-2 to {money::%uuid of arg-1%}
+        send "&aGave $%arg-2% to %arg-1%" to player
+        send "&6&lBONUS! &eAn admin gave you &a$%arg-2%&e!" to arg-1
+
+command /event <text>:
+    permission: op
+    trigger:
+        if arg-1 is "start":
+            set {global_mult} to 2
+            broadcast "&6&lEVENT &eA 2x Money Multiplier has started for 10m!"
+            play sound "entity.ender_dragon.growl" with volume 0.5 to all players
+            wait 10 minutes
+            delete {global_mult}
+            broadcast "&6&lEVENT &eThe 2x Multiplier has ended."
+        else if arg-1 is "stop":
+            delete {global_mult}
+            send "&aEvent stopped." to player
+
+#################################################
+# WIPE SYSTEM (COMPLETE RESET)
+#################################################
+command /wipe <player>:
+    permission: op
+    trigger:
+        set {_uuid} to uuid of arg-1
+        set {money::%{_uuid}%} to 0
+        delete {gens_bought::%{_uuid}%} # RESET 3X COST
+
+        # Clean Cores & Holos
+        loop {core_locs::*}:
+            if {core_owner::%loop-value%} is {_uuid}:
+                set {_loc} to loop-value
+                set {_x} to round(x-coord of {_loc})
+                set {_y} to round(y-coord of {_loc} + 2.2)
+                set {_z} to round(z-coord of {_loc})
+                set {_id} to "core_%{_x}%_%{_y}%_%{_z}%"
+                execute console command "/dh h delete %{_id}%"
+                set block at {_loc} to air
+                delete {core_owner::%{_loc}%}
+                delete {core_money::%{_loc}%}
+                remove {_loc} from {core_locs::*}
+
+        # Clean Generators
+        loop {gen_locs::*}:
+            if {gen_owner::%loop-value%} is {_uuid}:
+                set block at loop-value to air
+                remove loop-value from {gen_locs::*}
+                delete {gen_owner::%loop-value%}
+                delete {gen_level::%loop-value%}
+                delete {gen_money::%loop-value%}
+                delete {gen_cost::%loop-value%}
+
+        clear arg-1's inventory
+        give arg-1 beacon named "{@core-name}"
+        give arg-1 dispenser named "{@gen-name}"
+        send "&cTycoon wiped & costs reset!" to arg-1
+        send "&aSuccessfully wiped %arg-1%." to player
+
+#################################################
+# SHOP (3X COST & GRAY STAINED GLASS)
+#################################################
+command /genshop:
+    trigger:
+        set {_bought} to {gens_bought::%uuid of player%} ? 0
+        set {_current_gen_cost} to 100 * (3 ^ {_bought})
+
+        create a gui with virtual chest inventory with 3 rows named "&8&lTycoon Shop":
+            loop integers from 0 to 26:
+                make gui slot loop-integer with gray stained glass pane named " "
+            
+            make gui slot 11 with beacon named "{@core-name}" with lore "", "&7Cost: &a$500", "", "&eCentral Bank!", "&bCollects all generator money.":
+                if {money::%uuid of player%} >= 500:
+                    if player has enough space for 1 beacon:
+                        remove 500 from {money::%uuid of player%}
+                        give player beacon named "{@core-name}"
+                        send "&aBought a Core!" to player
+                    else:
+                        send "&cInventory full!" to player
+                else:
+                    send "&cNeed $500!" to player
+
+            make gui slot 15 with dispenser named "{@gen-name}" with lore "", "&7Cost: &a$%{_current_gen_cost}%", "&7Purchased: &f%{_bought}%", "", "&eNext one costs 3x more!", "&eUpgrade by sneaking!":
+                if {money::%uuid of player%} >= {_current_gen_cost}:
+                    if player has enough space for 1 dispenser:
+                        remove {_current_gen_cost} from {money::%uuid of player%}
+                        add 1 to {gens_bought::%uuid of player%}
+                        give player dispenser named "{@gen-name}"
+                        send "&aBought Generator! Price tripled." to player
+                        execute player command "/genshop"
+                    else:
+                        send "&cInventory full!" to player
+                else:
+                    send "&cNeed $%{_current_gen_cost}%!" to player
+        open last gui for player
+
+#################################################
+# PASSIVE GENERATION & ROUNDED HOLOS
+#################################################
+every 1 second:
+    set {_m} to {global_mult} ? 1
+
+    loop {core_locs::*}:
+        set {_loc} to loop-value
+        add ({@base-core-money} * {_m}) to {core_money::%{_loc}%}
+        
+        # --- THE PERFECT CENTER FORMULA ---
+        set {_w} to world of {_loc}
+        set {_x} to floor(x-coord of {_loc}) + 0.5
+        set {_y} to y-coord of {_loc} + 1.5 # Floating height
+        set {_z} to floor(z-coord of {_loc}) + 0.5
+        
+        # ID still needs to be clean (No dots in IDs for DH)
+        set {_id} to "core_%floor({_x})%_%floor({_y})%_%floor({_z})%"
+        set {_money} to {core_money::%{_loc}%}
+        
+        # Determine Display
+        set {_line2} to "&a$%{_money}% &7Pending..."
+        if {_m} > 1:
+            set {_line2} to "&a$%{_money}% &b(2x ACTIVE!)"
+
+        # --- DELETE & RECREATE FOR INSTANT UPDATES ---
+        execute console command "/dh h delete %{_id}%"
+        execute console command "/dh h create %{_id}% -l:%{_w}%:%{_x}%:%{_y}%:%{_z}% &6&l{@core-name};%{_line2}%"
+
+    # Generator Passive Income (Logic remains the same)
+    loop {gen_locs::*}:
+        set {_loc} to loop-value
+        set {_lvl} to {gen_level::%{_loc}%}
+        set {_inc} to 0
+        if {_lvl} = 1:
+            set {_inc} to 2
+        else if {_lvl} = 2:
+            set {_inc} to 5
+        else if {_lvl} = 3:
+            set {_inc} to 15
+        else if {_lvl} = 4:
+            set {_inc} to 40
+        else if {_lvl} = 5:
+            set {_inc} to 100
+        else if {_lvl} = 6:
+            set {_inc} to 250
+        else if {_lvl} >= 7:
+            set {_inc} to 750
+        add ({_inc} * {_m}) to {gen_money::%{_loc}%}
+
+#################################################
+# PLACEMENT & COLLECTION
+#################################################
+on place:
+    set {_loc} to location of event-block
+    if name of player's tool is "{@core-name}":
+        remove {_loc} from {core_locs::*}
+        add {_loc} to {core_locs::*}
+        set {core_owner::%{_loc}%} to uuid of player
+        set {core_money::%{_loc}%} to 0
+        send "&eCore placed!" to player
+
+    if name of player's tool contains "Generator":
+        remove {_loc} from {gen_locs::*}
+        add {_loc} to {gen_locs::*}
+        set {gen_owner::%{_loc}%} to uuid of player
+        set {gen_level::%{_loc}%} to 1
+        set {gen_money::%{_loc}%} to 0
+        set {gen_cost::%{_loc}%} to {@start-gen-cost}
+        set block at event-block to dirt
+        send "&aGenerator placed!" to player
+
+on right click:
+    set {_loc} to location of clicked block
+    
+    # COLLECT ALL
+    if {core_owner::%{_loc}%} is set:
+        cancel event
+        if {core_owner::%{_loc}%} is not uuid of player:
+            send "&cNot yours!" to player
+            stop
+        set {_total} to {core_money::%{_loc}%}
+        set {core_money::%{_loc}%} to 0
+        loop {gen_locs::*}:
+            if {gen_owner::%loop-value%} is uuid of player:
+                add {gen_money::%loop-value%} to {_total}
+                set {gen_money::%loop-value%} to 0
+        add {_total} to {money::%uuid of player%}
+        send "&a&l+$%{_total}%" to player
+        play sound "entity.experience_orb.pickup" with volume 0.5 to player
+        
+        # Reset Holo
+        set {_x} to round(x-coord of {_loc})
+        set {_y} to round(y-coord of {_loc} + 2.2)
+        set {_z} to round(z-coord of {_loc})
+        set {_id} to "core_%{_x}%_%{_y}%_%{_z}%"
+        execute console command "/dh h setline %{_id}% 2 &a$0 &7Pending..."
+
+    # UPGRADE
+    if {gen_owner::%{_loc}%} is set:
+        cancel event
+        if player is sneaking:
+            set {_cost} to {gen_cost::%{_loc}%}
+            if {gen_level::%{_loc}%} >= 7:
+                send "&cMax level reached!" to player
+                stop
+            if {money::%uuid of player%} >= {_cost}:
+                remove {_cost} from {money::%uuid of player%}
+                add 1 to {gen_level::%{_loc}%}
+                set {gen_cost::%{_loc}%} to {gen_cost::%{_loc}%} * 2
+                
+                set {_l} to {gen_level::%{_loc}%}
+                if {_l} = 2:
+                    set block at {_loc} to cobblestone
+                else if {_l} = 3:
+                    set block at {_loc} to iron block
+                else if {_l} = 4:
+                    set block at {_loc} to gold block
+                else if {_l} = 5:
+                    set block at {_loc} to diamond block
+                else if {_l} = 6:
+                    set block at {_loc} to emerald block
+                else if {_l} = 7:
+                    set block at {_loc} to netherite block
+                send "&aUpgraded to Level %{_l}%!" to player
+                play sound "block.anvil.use" with volume 0.3 to player
+            else:
+                send "&cNeed $%{_cost}%!" to player
+
+on break:
+    set {_loc} to location of event-block
+    if {core_owner::%{_loc}%} is set:
+        set {_x} to round(x-coord of {_loc})
+        set {_y} to round(y-coord of {_loc} + 2.2)
+        set {_z} to round(z-coord of {_loc})
+        set {_id} to "core_%{_x}%_%{_y}%_%{_z}%"
+        execute console command "/dh h delete %{_id}%"
+        remove {_loc} from {core_locs::*}
+        delete {core_owner::%{_loc}%}
+        delete {core_money::%{_loc}%}
+    if {gen_owner::%{_loc}%} is set:
+        remove {_loc} from {gen_locs::*}
+        delete {gen_owner::%{_loc}%}
+        delete {gen_level::%{_loc}%}
+        delete {gen_money::%{_loc}%}
+        delete {gen_cost::%{_loc}%}
